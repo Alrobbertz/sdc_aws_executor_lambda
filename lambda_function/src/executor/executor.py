@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Dict
+from typing import Any
 
 import boto3
 import pandas as pd
@@ -18,24 +18,29 @@ import requests
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 from astropy.timeseries import TimeSeries
-
 from sdc_aws_utils.aws import push_science_file
 from sdc_aws_utils.config import parser as science_filename_parser
-from swxsoc_reach.net.udl import download_UDL_reach_to_file
 from swxsoc import log
 from swxsoc.util import util
+from swxsoc_reach.net.udl import download_UDL_reach_to_file
 
 
-def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+def handle_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
-    Handles the event passed to the Lambda function to initialize the Executor.
+    Handle the Lambda trigger event and dispatch the configured executor action.
 
-    :param event: Event data passed from the Lambda trigger
-    :type event: dict
-    :param context: Lambda context
-    :type context: dict
-    :return: Returns a 200 (Success) or 500 (Error) HTTP response
-    :rtype: dict
+    Parameters
+    ----------
+    event : dict[str, Any]
+        Lambda event payload. Expected to contain an EventBridge rule ARN in
+        ``event["resources"][0]``.
+    context : Any
+        Lambda runtime context object.
+
+    Returns
+    -------
+    dict[str, Any]
+        HTTP-style response containing ``statusCode`` and JSON ``body``.
     """
     log.info("Received event", extra={"event": event, "context": context})
 
@@ -74,13 +79,22 @@ def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
 
 class Executor:
     """
-    Executes the appropriate function based on the event rule.
-
-    :param function_name: The name of the function to execute based on the event
-    :type function_name: str
+    Execute mapped actions selected from EventBridge rule names.
     """
 
     def __init__(self, function_name: str) -> None:
+        """
+        Initialize executor state and attempt to load required secrets.
+
+        Parameters
+        ----------
+        function_name : str
+            Name of the mapped function to execute.
+
+        Returns
+        -------
+        None
+        """
         self.function_name = function_name
         self.function_mapping = {
             "import_GOES_data_to_timestream": self.import_GOES_data_to_timestream,
@@ -109,7 +123,12 @@ class Executor:
 
     def execute(self) -> None:
         """
-        Executes the mapped function.
+        Execute the mapped function for the configured ``function_name``.
+
+        Raises
+        ------
+        ValueError
+            If ``function_name`` is not present in ``function_mapping``.
         """
         if self.function_name not in self.function_mapping:
             raise ValueError(f"Function '{self.function_name}' is not recognized.")
@@ -118,14 +137,18 @@ class Executor:
 
     @staticmethod
     def import_stix_to_timestream() -> None:
-        """Imports latest stix data from stix datacenter and import to Timestream"""
+        """
+        Import recent STIX quicklook light curve data into Timestream.
+        """
         log.info("Importing SO/STIX data to Timestream")
         from stixdcpy.quicklook import LightCurves
 
         dt = TimeDelta(12 * u.hr)
         delay = TimeDelta(8 * u.hr)
         now = Time.now()
+        # 12 hours of data, starting 20 hours ago, ending 8 hours ago
         tr = [now - delay - dt, now - delay]
+        # Fetch LightCurve Data from STIX Data Center
         lc = LightCurves.from_sdc(start_utc=tr[0].isot, end_utc=tr[1].isot, ltc=True)
         if lc.data:
             stix_ts = TimeSeries(
@@ -141,12 +164,16 @@ class Executor:
 
     @staticmethod
     def get_padre_orbit_data() -> None:
+        """
+        Download latest PADRE orbit inputs, compute trajectory, and persist results.
+        """
         os.environ["SWXSOC_MISSION"] = "padre"
-        from padre_craft.orbit import PadreOrbit
-        from padre_craft.io.aws_db import record_orbit
-        from padre_craft import NORAD_ID
         import urllib.request
         from pathlib import Path
+
+        from padre_craft import NORAD_ID
+        from padre_craft.io.aws_db import record_orbit
+        from padre_craft.orbit import PadreOrbit
 
         tle_path = "/tmp/padre_tle.csv"
         url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={NORAD_ID}&FORMAT=CSV"
@@ -185,7 +212,17 @@ class Executor:
     @staticmethod
     def _upload_reach_file_to_s3(filepath: str) -> str:
         """
-        Stub hook for future S3 upload integration via sdc_aws_utils.
+        Upload a downloaded REACH file to the configured destination bucket.
+
+        Parameters
+        ----------
+        filepath : str
+            Local path to the downloaded REACH output file.
+
+        Returns
+        -------
+        str
+            Destination object key returned by ``push_science_file``.
         """
         os.environ["SWXSOC_MISSION"] = "swxsoc_pipeline"
         import swxsoc
@@ -217,7 +254,7 @@ class Executor:
     @staticmethod
     def import_UDL_REACH_to_s3() -> None:
         """
-        Downloads REACH data from UDL into /tmp files for later S3 upload.
+        Download REACH data from UDL and upload the resulting file to S3.
         """
         basic_auth = os.environ["basicauth".upper()]
         sensor_id = os.environ.get("REACH_SENSOR_ID", "ALL")
@@ -284,9 +321,9 @@ class Executor:
         )
 
     @staticmethod
-    def import_GOES_data_to_timestream():
+    def import_GOES_data_to_timestream() -> None:
         """
-        Imports GOES data to Timestream.
+        Import recent GOES X-ray flux measurements into Timestream.
         """
 
         log.info("Importing GOES data to Timestream")
@@ -334,7 +371,7 @@ class Executor:
     @staticmethod
     def create_GOES_data_annotations() -> None:
         """
-        Creates annotations for GOES data.
+        Create GOES flare annotations for the mission dashboard.
         """
         log.info("Creating GOES data annotations")
         try:
@@ -394,6 +431,19 @@ class Executor:
 
     @staticmethod
     def generate_cloc_report_and_upload() -> str:
+        """
+        Generate a combined cloc report for configured repositories and upload it.
+
+        Returns
+        -------
+        str
+            S3 URI for the uploaded combined report.
+
+        Raises
+        ------
+        ValueError
+            If required environment variables are missing.
+        """
         orgs_or_users = os.environ.get("GITHUB_ORGS_USERS", "").split(",")
         s3_bucket = os.environ.get("S3_BUCKET")
         s3_key = os.environ.get("S3_KEY", "combined_cloc_report.csv")
