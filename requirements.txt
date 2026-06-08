@@ -1,8 +1,0 @@
-pytest
-pytest-astropy 
-pytest-cov
-flake8 
-black
-pandas
-stixdcpy
-padre_craft @ git+https://github.com/padreSat/padre_craft.git
