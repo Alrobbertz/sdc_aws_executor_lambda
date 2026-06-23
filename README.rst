@@ -93,16 +93,27 @@ Generate lines of code report and upload
 Generates a lines-of-code report and uploads the output artifact.
 
 
-download_UDL_REACH_to_file
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+import_UDL_REACH_to_s3
+^^^^^^^^^^^^^^^^^^^^^^^
 
 Downloads REACH data from UDL in chunked requests, combines all records,
 and writes a single output file to Lambda storage for upload.
 
+The query window is snapped to UTC midnight boundaries so each run always
+covers a whole midnight-to-midnight day, independent of the exact second
+the Lambda executes. The window is driven by two day-based offsets
+measured from UTC midnight of the current run day:
+
+- ``REACH_WINDOW_END_DAYS_AGO``: number of days before today's UTC
+  midnight at which the window ends.
+- ``REACH_WINDOW_DAYS``: length of the window in whole days.
+
 Suggested daily pattern:
 
-- Set ``REACH_WINDOW_SECONDS=86400`` for one day per run.
-- Schedule one daily EventBridge trigger.
+- Schedule one daily EventBridge trigger, e.g. ``cron(0 6 * * ? *)`` UTC.
+- Keep ``REACH_WINDOW_END_DAYS_AGO=1`` and ``REACH_WINDOW_DAYS=1`` to pull
+  the full day before yesterday (54 hours ago to 30 hours ago at run
+  time), e.g. the window ``[today 00:00 - 2 days, today 00:00 - 1 day)``.
 - Upload the single combined artifact produced by each run.
 
 Recommended environment variables:
@@ -110,10 +121,11 @@ Recommended environment variables:
 - ``REACH_SENSOR_ID`` (default: ``ALL``): sensors to query from UDL.
 - ``REACH_DESCRIPTOR`` (default: ``QUICKLOOK``): data product to query from UDL.
 - ``REACH_FILE_FORMAT`` (default: ``json``): output format (``json`` or ``csv``).
-- ``REACH_DELAY_SECONDS`` (default: ``7200``): offset from ``datetime.now(timezone.utc)`` to the end time.
-- ``REACH_WINDOW_SECONDS`` (default: ``600``): window size before end time.
+- ``REACH_WINDOW_END_DAYS_AGO`` (default: ``1``): days before today's UTC midnight at which the window ends.
+- ``REACH_WINDOW_DAYS`` (default: ``1``): length of the query window in whole days.
 - ``REACH_OUTPUT_DIR`` (default: ``/tmp``): Lambda container directory for output files.
-- ``REACH_DESTINATION_BUCKET`` (default: ``dev-swxsoc-pipeline-incoming``): bucket to upload output files.
+- ``REACH_DESTINATION_BUCKET_DEV`` (default: ``dev-swxsoc-pipeline-incoming``): bucket to upload output files.
+- ``REACH_DESTINATION_BUCKET_PROD`` (default: ``swxsoc-pipeline-incoming``): bucket to upload output files.
 - ``REACH_UDL_MAX_CONCURRENT_REQUESTS`` (default: ``8``): max concurrent workers for UDL pulls.
 - ``REACH_UDL_INITIAL_RATE`` (default: ``5.0``): AIMD starting request rate (requests/second).
 - ``REACH_UDL_ADDITIVE_INCREASE`` (default: ``1.0``): AIMD additive increase after successful requests.
@@ -137,8 +149,7 @@ Building and Running Locally
 ----------------------------
 
 The container image can be built and run locally. You can specify the base image at runtime.
-At the time of writing, the base image defaults to
-``padre-swsoc-docker-lambda-base:latest`` in AWS.
+At the time of writing, the base image defaults to ``padre-swsoc-docker-lambda-base:latest`` in AWS.
 
 .. code-block:: sh
 
@@ -158,7 +169,8 @@ You can retrieve the Grafana and UDL ARNs from AWS.
 .. code-block:: sh
 
     docker run -p 9000:8080 \
-      -e REACH_DESTINATION_BUCKET="dev-swxsoc-pipeline-incoming" \
+      -e REACH_DESTINATION_BUCKET_DEV="dev-swxsoc-pipeline-incoming" \
+      -e REACH_DESTINATION_BUCKET_PROD="swxsoc-pipeline-incoming" \
       -e SECRET_ARN_GRAFANA=$SECRET_ARN_GRAFANA \
       -e SECRET_ARN_UDL=$SECRET_ARN_UDL \
       -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
